@@ -82,8 +82,11 @@ export async function POST(request: Request) {
     if (type === 'matchmake') {
       if (!validGame(body.game)) return Response.json({ error: 'Избери игра.' }, { status: 400 });
       const game = body.game;
-      const waiting = await db.prepare("SELECT * FROM rooms WHERE game = ? AND status = 'waiting' AND host_id != ? AND updated_at > ? ORDER BY created_at ASC LIMIT 1")
-        .bind(game, playerId, Date.now() - 1800000).first<RoomRow>();
+      const waiting = await db.prepare(`SELECT rooms.* FROM rooms
+        JOIN room_players ON room_players.room_id = rooms.id AND room_players.player_id = rooms.host_id
+        WHERE rooms.game = ? AND rooms.status = 'waiting' AND rooms.host_id != ? AND room_players.last_seen >= ?
+        ORDER BY rooms.created_at ASC LIMIT 1`)
+        .bind(game, playerId, Date.now() - ROOM_PRESENCE_WINDOW_MS).first<RoomRow>();
       if (waiting) {
         const row = parseRoom(waiting);
         const state = joinState(game, row.state, row.host_id, playerId);
@@ -111,6 +114,9 @@ export async function POST(request: Request) {
         return Response.json(await roomView(room, playerId));
       }
       if (room.status !== 'waiting') return Response.json({ error: 'Собата е полна.' }, { status: 409 });
+      const hostPresent = await db.prepare('SELECT player_id FROM room_players WHERE player_id = ? AND room_id = ? AND last_seen >= ?')
+        .bind(room.host_id, room.id, Date.now() - ROOM_PRESENCE_WINDOW_MS).first<{ player_id: string }>();
+      if (!hostPresent) return Response.json({ error: 'Домаќинот веќе ја напушти собата.' }, { status: 409 });
       const state = joinState(room.game as GameSlug, room.state, room.host_id, playerId);
       const joined = await db.prepare("UPDATE rooms SET guest_id = ?, guest_name = ?, state = ?, status = 'playing', updated_at = ? WHERE id = ? AND status = 'waiting' AND guest_id IS NULL")
         .bind(playerId, nickname, JSON.stringify(state), Date.now(), id).run();
