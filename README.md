@@ -42,7 +42,7 @@ npm run build
 npm run deploy
 ```
 
-За автоматско објавување преку GitHub Actions, во repository secrets додади `CLOUDFLARE_API_TOKEN` и `CLOUDFLARE_ACCOUNT_ID`. Токенот треба да има Workers Scripts и D1 write дозволи.
+За објавување преку рачно активираниот GitHub Actions workflow, во repository secrets додади `CLOUDFLARE_API_TOKEN` и `CLOUDFLARE_ACCOUNT_ID`. Токенот треба да има Workers Scripts и D1 write дозволи.
 
 Live: [igrajmo-se.stojanovskit2022.workers.dev](https://igrajmo-se.stojanovskit2022.workers.dev)
 
