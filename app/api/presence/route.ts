@@ -5,9 +5,11 @@ import { ensureSchema } from '@/db/rooms';
 export const runtime = 'edge';
 
 const ONLINE_WINDOW_MS = 2 * 60 * 1000;
-const ROOM_PRESENCE_WINDOW_MS = 10 * 1000;
+const ROOM_PRESENCE_WINDOW_MS = 15 * 1000;
+const ROOM_PRESENCE_WRITE_INTERVAL_MS = 8 * 1000;
 const CLEANUP_AGE_MS = 24 * 60 * 60 * 1000;
 const RECENT_GAMES_WINDOW_MS = 24 * 60 * 60 * 1000;
+const CLEANUP_SAMPLE_SIZE = 64;
 
 type StatsRow = {
   game?: string | null;
@@ -100,19 +102,24 @@ export async function POST(request: Request) {
 
   const now = Date.now();
   const roomPresenceStatement = roomId
-    ? db.prepare('UPDATE room_players SET last_seen = ? WHERE player_id = ? AND room_id = ?').bind(now, playerId, roomId)
+    ? db.prepare('UPDATE room_players SET last_seen = ? WHERE player_id = ? AND room_id = ? AND last_seen <= ?')
+      .bind(now, playerId, roomId, now - ROOM_PRESENCE_WRITE_INTERVAL_MS)
     : db.prepare('DELETE FROM room_players WHERE player_id = ?').bind(playerId);
-  await db.batch([
+  const statements = [
     db.prepare(`INSERT INTO online_players (player_id, nickname, game, last_seen) VALUES (?, ?, ?, ?)
       ON CONFLICT(player_id) DO UPDATE SET nickname = excluded.nickname, game = excluded.game, last_seen = excluded.last_seen`)
       .bind(playerId, nickname, game, now),
     roomPresenceStatement,
-    db.prepare('DELETE FROM online_players WHERE last_seen < ?').bind(now - CLEANUP_AGE_MS),
-    db.prepare('DELETE FROM visitor_rooms WHERE player_id NOT IN (SELECT player_id FROM online_players)'),
-    db.prepare('DELETE FROM room_players WHERE last_seen < ?').bind(now - CLEANUP_AGE_MS),
-    db.prepare('DELETE FROM presence WHERE last_seen < ?').bind(now - CLEANUP_AGE_MS),
-  ]);
+  ];
+  if (crypto.getRandomValues(new Uint8Array(1))[0] % CLEANUP_SAMPLE_SIZE === 0) {
+    statements.push(
+      db.prepare('DELETE FROM online_players WHERE last_seen < ?').bind(now - CLEANUP_AGE_MS),
+      db.prepare('DELETE FROM visitor_rooms WHERE player_id NOT IN (SELECT player_id FROM online_players)'),
+      db.prepare('DELETE FROM room_players WHERE last_seen < ?').bind(now - CLEANUP_AGE_MS),
+      db.prepare('DELETE FROM presence WHERE last_seen < ?').bind(now - CLEANUP_AGE_MS),
+    );
+  }
+  await db.batch(statements);
 
   return response(now, playerId);
 }
-

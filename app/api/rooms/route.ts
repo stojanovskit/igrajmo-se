@@ -4,7 +4,8 @@ import { act, GAME_SLUGS, GameSlug, initialState, joinState, publicState } from 
 import { ensureSchema, getRoom, parseRoom, RoomRow, saveRoomState } from '@/db/rooms';
 
 export const runtime = 'edge';
-const ROOM_PRESENCE_WINDOW_MS = 10 * 1000;
+const ROOM_PRESENCE_WINDOW_MS = 15 * 1000;
+const ROOM_PRESENCE_WRITE_INTERVAL_MS = 8 * 1000;
 
 const cleanText = (value: unknown, fallback = '') => {
   const valueText = typeof value === 'string' ? value.trim().replace(/[^\p{L}\p{N}_ -]/gu, '') : '';
@@ -31,8 +32,9 @@ async function roomView(room: Awaited<ReturnType<typeof getRoom>>, playerId: str
   const isParticipant = playerId === room.host_id || playerId === room.guest_id;
   if (isParticipant && room.status !== 'finished') {
     await db.prepare(`INSERT INTO room_players (player_id, room_id, last_seen) VALUES (?, ?, ?)
-      ON CONFLICT(player_id) DO UPDATE SET room_id = excluded.room_id, last_seen = excluded.last_seen`)
-      .bind(playerId, room.id, now).run();
+      ON CONFLICT(player_id) DO UPDATE SET room_id = excluded.room_id, last_seen = excluded.last_seen
+      WHERE room_players.room_id != excluded.room_id OR room_players.last_seen <= ?`)
+      .bind(playerId, room.id, now, now - ROOM_PRESENCE_WRITE_INTERVAL_MS).run();
   }
   const opponentId = playerId === room.host_id ? room.guest_id : playerId === room.guest_id ? room.host_id : null;
   let opponentPresent: boolean | null = null;
@@ -140,4 +142,3 @@ export async function POST(request: Request) {
   }
   return Response.json({ error: 'Непознато барање.' }, { status: 400 });
 }
-

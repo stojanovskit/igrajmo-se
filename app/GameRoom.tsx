@@ -37,7 +37,7 @@ export default function GameRoom({ game, initialRoomCode, savedNickname, onSaveN
   }, [activeRoomId, onRoomActivity]);
   useEffect(() => {
     if (!activeRoomId || activeRoomStatus === 'finished') return;
-    const timer = setInterval(async () => { try { const response = await fetch(`/api/rooms?id=${activeRoomId}&playerId=${playerId}`,{cache:'no-store'}); if (response.ok) setRoom(await response.json()); } catch {} }, 900);
+    const timer = setInterval(async () => { try { const response = await fetch(`/api/rooms?id=${activeRoomId}&playerId=${playerId}`,{cache:'no-store'}); if (response.ok) setRoom(await response.json()); } catch {} }, 3_000);
     return () => clearInterval(timer);
   },[activeRoomId,activeRoomStatus,playerId]);
   useEffect(() => {
@@ -109,4 +109,3 @@ function YambBoard({room,playerId,busy,action}:any){const mine=room.state.sheets
 function ZandarBoard({room,playerId,busy,action}:any){const hand=room.state.hands[playerId]||[],captured=room.state.captured[playerId]?.length||0;return <div className="compact-game"><div className="zandar-table"><small>МАСА · {room.state.table.length} КАРТИ</small><span className={room.state.table.at(-1)?.match(/[♥♦]/)?'red-card':''}>{room.state.table.at(-1)||'—'}</span></div><div className="card-hand">{hand.map((card:string,i:number)=><button key={i} className={card.match(/[♥♦]/)?'red-card':''} disabled={busy||room.turn_id!==playerId} onClick={()=>action('play',{index:i})}>{card}</button>)}</div><p className="rules-note">Собрани карти: {captured}. Собери ја масата со ист број или со Жандар (J).</p></div>}
 
 function KugliksBoard({room,playerId,busy,action}:any){return <div className="kugliks-game"><div className="defense-stats"><span>♥ {room.state.health}</span><span>Бран {room.state.wave}</span><span>Одбрани {room.state.score}/18</span></div><div className="hex-grid">{room.state.threats.map((threat:number,i:number)=><button key={i} disabled={busy||room.turn_id!==playerId} className={`threat-${Math.min(threat,3)}`} onClick={()=>action('defend',{cell:i})}>{i===9?'⌂':threat?'●'.repeat(threat):'·'}</button>)}</div><p className="rules-note">Кооперативна одбрана: наизменично смирувајте ги заканите на работ. Ако поле надмине 3, градот губи живот.</p></div>}
-

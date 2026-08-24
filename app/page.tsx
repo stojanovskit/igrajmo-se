@@ -73,25 +73,21 @@ export default function Home() {
         // Keep the page playable if the presence service is temporarily unavailable.
       }
     };
-    const refreshStats = async () => {
-      try { await applyStats(await fetch(`/api/presence?playerId=${encodeURIComponent(playerId)}`, { cache: 'no-store' })); } catch {}
-    };
-
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') void heartbeat();
     };
-    const onPageShow = () => void heartbeat();
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) void heartbeat();
+    };
 
     void heartbeat();
-    const heartbeatInterval = window.setInterval(() => void heartbeat(), 45_000);
-    const statsInterval = window.setInterval(() => void refreshStats(), 15_000);
+    const heartbeatInterval = window.setInterval(() => void heartbeat(), 30_000);
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pageshow', onPageShow);
 
     return () => {
       stopped = true;
       window.clearInterval(heartbeatInterval);
-      window.clearInterval(statsInterval);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pageshow', onPageShow);
     };
@@ -221,4 +217,3 @@ function ProfileModal({ nickname, onSave, onClose }: { nickname: string; onSave:
   const [name, setName] = useState(nickname);
   return <div className="modal-layer" role="dialog" aria-modal="true" aria-label="Профил"><div className="small-modal"><button className="modal-close" onClick={onClose}>×</button><span className="modal-icon">☺</span><h2>Како да те викаме?</h2><p>Не ти треба сметка. Избери прекар и влези во игра.</p><form onSubmit={(event) => { event.preventDefault(); if (name.trim()) onSave(name.trim().slice(0, 20)); }}><label>Твој прекар<input autoFocus value={name} maxLength={20} onChange={(event) => setName(event.target.value)} placeholder="на пр. Skopje_87" /></label><button className="modal-primary" type="submit">Зачувај прекар</button></form></div></div>;
 }
-
