@@ -12,7 +12,7 @@ const diceFaces = ['⚀','⚁','⚂','⚃','⚄','⚅'];
 const chessPieces: Record<string,string> = { wK:'♔',wQ:'♕',wR:'♖',wB:'♗',wN:'♘',wP:'♙',bK:'♚',bQ:'♛',bR:'♜',bB:'♝',bN:'♞',bP:'♟' };
 const yambCategories = [['1','Единици'],['2','Двојки'],['3','Тројки'],['4','Четворки'],['5','Петки'],['6','Шестки'],['three','Три исти'],['straight','Кента'],['full','Фул'],['poker','Покер'],['yamb','Јамб']];
 
-export default function GameRoom({ game, savedNickname, onSaveNickname, onClose }: { game: GameInfo; savedNickname: string; onSaveNickname: (name:string)=>void; onClose:()=>void }) {
+export default function GameRoom({ game, savedNickname, onSaveNickname, onRoomActivity, onClose }: { game: GameInfo; savedNickname: string; onSaveNickname: (name:string)=>void; onRoomActivity: (roomId: string | null) => void; onClose:()=>void }) {
   const [nickname,setNickname] = useState(savedNickname);
   const [roomCode,setRoomCode] = useState('');
   const [playerId,setPlayerId] = useState('');
@@ -23,6 +23,10 @@ export default function GameRoom({ game, savedNickname, onSaveNickname, onClose 
   const activeRoomStatus = room?.status;
 
   useEffect(() => { let id = localStorage.getItem('igrajmo-player-id'); if (!id) { id = crypto.randomUUID().replace(/-/g,''); localStorage.setItem('igrajmo-player-id',id); } setPlayerId(id); }, []);
+  useEffect(() => {
+    onRoomActivity(activeRoomId || null);
+    return () => onRoomActivity(null);
+  }, [activeRoomId, onRoomActivity]);
   useEffect(() => {
     if (!activeRoomId || activeRoomStatus === 'finished') return;
     const timer = setInterval(async () => { try { const response = await fetch(`/api/rooms?id=${activeRoomId}&playerId=${playerId}`,{cache:'no-store'}); if (response.ok) setRoom(await response.json()); } catch {} }, 900);

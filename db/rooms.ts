@@ -47,6 +47,19 @@ export async function ensureSchema() {
         last_seen INTEGER NOT NULL
       )`),
       db.prepare('CREATE INDEX IF NOT EXISTS idx_presence_last_seen ON presence(last_seen)'),
+      db.prepare(`CREATE TABLE IF NOT EXISTS online_players (
+        player_id TEXT PRIMARY KEY,
+        nickname TEXT NOT NULL,
+        game TEXT,
+        last_seen INTEGER NOT NULL
+      )`),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_online_players_last_seen ON online_players(last_seen)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_online_players_game_last_seen ON online_players(game, last_seen)'),
+      db.prepare(`CREATE TABLE IF NOT EXISTS visitor_rooms (
+        player_id TEXT PRIMARY KEY,
+        room_id TEXT
+      )`),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_visitor_rooms_room_id ON visitor_rooms(room_id)'),
     ]).then(() => undefined).catch((error) => {
       schemaReady = null;
       throw error;
