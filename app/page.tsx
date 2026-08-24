@@ -30,8 +30,48 @@ export default function Home() {
   const [selectedGame, setSelectedGame] = useState<GameInfo | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [nickname, setNickname] = useState('');
+  const [onlineCount, setOnlineCount] = useState<number | null>(null);
 
   useEffect(() => setNickname(localStorage.getItem('igrajmo-nickname') || ''), []);
+
+  useEffect(() => {
+    let playerId = localStorage.getItem('igrajmo-player-id');
+    if (!playerId) {
+      playerId = crypto.randomUUID().replace(/-/g, '');
+      localStorage.setItem('igrajmo-player-id', playerId);
+    }
+
+    let stopped = false;
+    const heartbeat = async () => {
+      try {
+        const result = await fetch('/api/presence', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ playerId }),
+          cache: 'no-store',
+        });
+        if (!result.ok) return;
+        const data = await result.json() as { count?: number };
+        if (!stopped && typeof data.count === 'number') setOnlineCount(data.count);
+      } catch {
+        // Keep the page playable if the presence service is temporarily unavailable.
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void heartbeat();
+    };
+
+    void heartbeat();
+    const interval = window.setInterval(() => void heartbeat(), 45_000);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, []);
 
   function chooseGame(game: (typeof games)[number]) {
     setSelectedGame(game);
@@ -50,7 +90,7 @@ export default function Home() {
           <a href="#players">Играчи</a>
         </nav>
         <div className="header-actions">
-          <div className="online-pill"><span /> 527 онлајн</div>
+          <div className="online-pill" aria-live="polite"><span /> {onlineCount === null ? '…' : onlineCount} онлајн</div>
           <button className="login-button" onClick={() => setProfileOpen(true)}>{nickname || 'Играј како гостин'}</button>
         </div>
       </header>
@@ -105,7 +145,7 @@ export default function Home() {
       </section>
 
       <section className="community" id="players">
-        <div className="community-copy"><span className="section-kicker">НИКОГАШ НЕ СИ САМ</span><h2>Стара игра.<br />Нови пријателства.</h2><p>Влези во соба, поздрави го друштвото и почни партија. Баш како некогаш — само побрзо и поубаво.</p><div className="stat-row"><div><b>527</b><span>играчи сега</span></div><div><b>83</b><span>активни соби</span></div><div><b>12K+</b><span>партии денес</span></div></div></div>
+        <div className="community-copy"><span className="section-kicker">НИКОГАШ НЕ СИ САМ</span><h2>Стара игра.<br />Нови пријателства.</h2><p>Влези во соба, поздрави го друштвото и почни партија. Баш како некогаш — само побрзо и поубаво.</p><div className="stat-row"><div><b>{onlineCount === null ? '…' : onlineCount}</b><span>играчи сега</span></div><div><b>83</b><span>активни соби</span></div><div><b>12K+</b><span>партии денес</span></div></div></div>
         <div className="player-list"><div className="player-list-head"><b>Кој е онлајн?</b><span><i /> Во живо</span></div>{players.map((player) => <div className="player-row" key={player.name}><span className={`avatar ${player.color}`}>{player.initials}</span><p><b>{player.name}</b><small>{player.game}</small></p><button onClick={() => setSelectedGame(games[0])}>Играј</button></div>)}</div>
       </section>
 
