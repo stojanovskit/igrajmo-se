@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "igrajmo-se",
+  "main": "vinext/server/app-router-entry",
+  "compatibility_date": "2026-05-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "igrajmo-se-prod",
+      "database_id": "2757845f-8f90-4c93-8cef-ab56ba3cb9e4"
+    }
+  ],
+  "observability": { "enabled": true }
+}
+
