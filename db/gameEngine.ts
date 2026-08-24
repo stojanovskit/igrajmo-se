@@ -12,11 +12,19 @@ export type PlayerRoom = {
 
 export type GameResult = { state: any; turnId: string; status: PlayerRoom['status'] };
 
+const YAMB_CATEGORIES = new Set(['1', '2', '3', '4', '5', '6', 'three', 'straight', 'full', 'poker', 'yamb']);
 const otherPlayer = (room: PlayerRoom, id: string) => id === room.host_id ? room.guest_id || room.host_id : room.host_id;
+const randomInt = (max: number) => {
+  if (!Number.isInteger(max) || max < 1) throw new Error('Невалиден случаен опсег.');
+  const limit = 0x100000000 - (0x100000000 % max);
+  const values = new Uint32Array(1);
+  do crypto.getRandomValues(values); while (values[0] >= limit);
+  return values[0] % max;
+};
 const shuffle = <T,>(source: T[]) => {
   const result = [...source];
   for (let index = result.length - 1; index > 0; index -= 1) {
-    const swap = Math.floor(Math.random() * (index + 1));
+    const swap = randomInt(index + 1);
     [result[index], result[swap]] = [result[swap], result[index]];
   }
   return result;
@@ -37,9 +45,9 @@ function randomShips() {
   const occupied = new Set<number>();
   for (const length of [3, 2, 2]) {
     for (;;) {
-      const horizontal = Math.random() > .5;
-      const row = Math.floor(Math.random() * (horizontal ? 8 : 9 - length));
-      const col = Math.floor(Math.random() * (horizontal ? 9 - length : 8));
+      const horizontal = randomInt(2) === 1;
+      const row = randomInt(horizontal ? 8 : 9 - length);
+      const col = randomInt(horizontal ? 9 - length : 8);
       const cells = Array.from({ length }, (_, step) => (row + (horizontal ? 0 : step)) * 8 + col + (horizontal ? step : 0));
       if (cells.every((cell) => !occupied.has(cell))) { cells.forEach((cell) => occupied.add(cell)); break; }
     }
@@ -57,7 +65,7 @@ export function initialState(game: GameSlug, hostId: string) {
   if (game === 'ships') return { fleets: { [hostId]: randomShips() }, shots: {}, message: 'Чекаме уште еден играч…' };
   if (game === 'yamb') return { dice: [1,1,1,1,1], held: [false,false,false,false,false], rolls: 0, sheets: { [hostId]: {} }, message: 'Фрли ги коцките.' };
   if (game === 'zandar') { const deck = mkCards(); return { deck, hands: { [hostId]: deck.splice(0,4) }, table: deck.splice(0,4), captured: { [hostId]: [] }, lastCapture: hostId, message: 'Чекаме уште еден играч…' }; }
-  return { threats: Array(19).fill(0).map((_, i) => [0,1,2,6,7,11,12,16,17,18].includes(i) && Math.random() > .55 ? 1 : 0), score: 0, health: 5, wave: 1, message: 'Чекаме уште еден бранобранител…' };
+  return { threats: Array(19).fill(0).map((_, i) => [0,1,2,6,7,11,12,16,17,18].includes(i) && randomInt(100) >= 55 ? 1 : 0), score: 0, health: 5, wave: 1, message: 'Чекаме уште еден бранобранител…' };
 }
 
 export function joinState(game: GameSlug, state: any, hostId: string, guestId: string) {
@@ -65,7 +73,7 @@ export function joinState(game: GameSlug, state: any, hostId: string, guestId: s
   if (game === 'memory') next.scores[guestId] = 0;
   if (game === 'ludo') next.positions[guestId] = [-1,-1,-1,-1];
   if (game === 'domino') { next.hands[hostId] = next.bag.splice(0, 7); next.hands[guestId] = next.bag.splice(0, 7); }
-  if (game === 'sketch') next.word = ['ајвар','велосипед','сончоглед','чаршија','галеб','телефон','лавиринт','чадор'][Math.floor(Math.random() * 8)];
+  if (game === 'sketch') { const words = ['ајвар','велосипед','сончоглед','чаршија','галеб','телефон','лавиринт','чадор']; next.word = words[randomInt(words.length)]; }
   if (game === 'tarok') { next.hands[hostId] = next.deck.splice(0, 9); next.hands[guestId] = next.deck.splice(0, 9); next.tricks = { [hostId]: 0, [guestId]: 0 }; }
   if (game === 'ships') { next.fleets[guestId] = randomShips(); next.shots[hostId] = []; next.shots[guestId] = []; }
   if (game === 'yamb') next.sheets[guestId] = {};
@@ -107,6 +115,19 @@ function yambScore(category: string, dice: number[]) {
   return dice.reduce((a,b) => a+b, 0);
 }
 
+function ludoTarget(position: number, die: number) {
+  if (position === 28) return null;
+  if (position === -1) return die === 6 ? 0 : null;
+  const target = position + die;
+  return target <= 28 ? target : null;
+}
+
+function dominoFits(tile: number[], chain: number[][]) {
+  if (!chain.length) return true;
+  const left = chain[0][0], right = chain[chain.length - 1][1];
+  return tile.includes(left) || tile.includes(right);
+}
+
 function finish(state: any, turnId: string, message: string): GameResult { state.message = message; return { state, turnId, status: 'finished' }; }
 
 export function act(game: GameSlug, room: PlayerRoom, playerId: string, action: string, payload: any): GameResult {
@@ -130,12 +151,18 @@ export function act(game: GameSlug, room: PlayerRoom, playerId: string, action: 
   }
 
   if (game === 'ludo') {
-    if (action === 'roll') { if (state.dice) throw new Error('Прво помести фигура.'); state.dice = Math.floor(Math.random() * 6) + 1; state.message = `Падна ${state.dice}. Избери фигура.`; }
+    if (action === 'roll') {
+      if (state.dice) throw new Error('Прво помести фигура.');
+      const die = randomInt(6) + 1;
+      if (!state.positions[playerId].some((position: number) => ludoTarget(position, die) !== null)) {
+        state.dice = null; turnId = opponent; state.message = `Падна ${die}, но нема можен потег.`;
+      } else { state.dice = die; state.message = `Падна ${die}. Избери фигура.`; }
+    }
     else if (action === 'move') {
-      const index = Number(payload.index), current = state.positions[playerId][index], die = state.dice;
+      const index = Number(payload.index), die = state.dice;
       if (!die || !Number.isInteger(index) || index < 0 || index > 3) throw new Error('Прво фрли ја коцката.');
-      const target = current === -1 ? (die === 6 ? 0 : -1) : current + die;
-      if (target < 0 || target > 28) throw new Error('Таа фигура не може да се помести.');
+      const target = ludoTarget(state.positions[playerId][index], die);
+      if (target === null) throw new Error('Таа фигура не може да се помести.');
       state.positions[playerId][index] = target;
       if (target < 24) state.positions[opponent] = state.positions[opponent].map((value: number) => value === target ? -1 : value);
       state.dice = null;
@@ -156,8 +183,8 @@ export function act(game: GameSlug, room: PlayerRoom, playerId: string, action: 
 
   if (game === 'domino') {
     const hand = state.hands[playerId];
-    if (action === 'draw') { if (!state.bag.length) throw new Error('Нема повеќе плочки.'); hand.push(state.bag.pop()); state.message = 'Извлече плочка.'; }
-    else if (action === 'pass') { if (state.bag.length) throw new Error('Прво извлечи плочка.'); state.passed += 1; turnId = opponent; if (state.passed >= 2) { const my = hand.flat().reduce((a:number,b:number)=>a+b,0), his = state.hands[opponent].flat().reduce((a:number,b:number)=>a+b,0); return finish(state, my <= his ? playerId : opponent, 'Блокирано домино — победи помалиот збир!'); } }
+    if (action === 'draw') { if (hand.some((tile: number[]) => dominoFits(tile, state.chain))) throw new Error('Имаш плочка што може да се постави.'); if (!state.bag.length) throw new Error('Нема повеќе плочки.'); hand.push(state.bag.pop()); state.message = 'Извлече плочка.'; }
+    else if (action === 'pass') { if (state.bag.length) throw new Error('Прво извлечи плочка.'); if (hand.some((tile: number[]) => dominoFits(tile, state.chain))) throw new Error('Имаш плочка што може да се постави.'); state.passed += 1; turnId = opponent; if (state.passed >= 2) { const my = hand.flat().reduce((a:number,b:number)=>a+b,0), his = state.hands[opponent].flat().reduce((a:number,b:number)=>a+b,0); return finish(state, my <= his ? playerId : opponent, 'Блокирано домино — победи помалиот збир!'); } }
     else if (action === 'place') {
       const index = Number(payload.index), side = payload.side === 'left' ? 'left' : 'right', tile = hand[index]; if (!tile) throw new Error('Нема таква плочка.');
       const placed = [...tile];
@@ -170,13 +197,13 @@ export function act(game: GameSlug, room: PlayerRoom, playerId: string, action: 
   if (game === 'sketch') {
     if (action === 'stroke') { if (playerId !== state.drawerId) throw new Error('Само цртачот црта.'); const points = Array.isArray(payload.points) ? payload.points.slice(0, 80) : []; if (points.length < 2 || state.strokes.length > 350) throw new Error('Линијата не е валидна.'); state.strokes.push({ points, color: ['#19324a','#ff694f','#4f8df7','#42c49b'].includes(payload.color) ? payload.color : '#19324a' }); }
     else if (action === 'clear') { if (playerId !== state.drawerId) throw new Error('Само цртачот брише.'); state.strokes = []; }
-    else if (action === 'guess') { const text = String(payload.text || '').trim().slice(0,30); if (!text) throw new Error('Напиши збор.'); state.guesses.push({ player: playerId, text }); if (text.toLocaleLowerCase('mk') === state.word.toLocaleLowerCase('mk')) return finish(state, playerId, `Точно! Зборот беше „${state.word}“`); state.message = `Обид: ${text}`; }
+    else if (action === 'guess') { if (playerId === state.drawerId) throw new Error('Цртачот не може да погодува.'); const text = String(payload.text || '').trim().slice(0,30); if (!text) throw new Error('Напиши збор.'); state.guesses.push({ player: playerId, text }); if (text.toLocaleLowerCase('mk') === state.word.toLocaleLowerCase('mk')) return finish(state, playerId, `Точно! Зборот беше „${state.word}“`); state.message = `Обид: ${text}`; }
     else throw new Error('Невалиден потег.');
   }
 
   if (game === 'tarok') {
     if (action !== 'play') throw new Error('Невалиден потег.'); const hand = state.hands[playerId], index = Number(payload.index), card = hand[index]; if (!card) throw new Error('Нема таква карта.');
-    if (state.trick.length) { const lead = suit(state.trick[0].card); if (suit(card) !== lead && hand.some((item:string) => suit(item) === lead)) throw new Error('Мора да ја следиш бојата.'); }
+    if (state.trick.length) { const lead = suit(state.trick[0].card), cardSuit = suit(card), hasLead = hand.some((item:string) => suit(item) === lead); if (cardSuit !== lead && hasLead) throw new Error('Мора да ја следиш бојата.'); if (lead !== 'T' && cardSuit !== 'T' && !hasLead && hand.some((item:string) => suit(item) === 'T')) throw new Error('Мора да одиграш тарок.'); }
     hand.splice(index,1); state.trick.push({ player: playerId, card });
     if (state.trick.length === 1) { turnId = opponent; state.message = 'Противникот ја затвора раката.'; }
     else {
@@ -194,9 +221,9 @@ export function act(game: GameSlug, room: PlayerRoom, playerId: string, action: 
   }
 
   if (game === 'yamb') {
-    if (action === 'roll') { if (state.rolls >= 3) throw new Error('Избери поле за запишување.'); state.dice = state.dice.map((die:number, index:number) => state.held[index] ? die : Math.floor(Math.random()*6)+1); state.rolls += 1; state.message = `Фрлање ${state.rolls} од 3.`; }
-    else if (action === 'hold') { if (!state.rolls) throw new Error('Прво фрли ги коцките.'); const index = Number(payload.index); state.held[index] = !state.held[index]; }
-    else if (action === 'score') { const category = String(payload.category); if (!state.rolls || state.sheets[playerId][category] !== undefined) throw new Error('Тоа поле не може да се запише.'); state.sheets[playerId][category] = yambScore(category, state.dice); state.dice = [1,1,1,1,1]; state.held = [false,false,false,false,false]; state.rolls = 0; turnId = opponent; const totalFields = Object.keys(state.sheets[playerId]).length + Object.keys(state.sheets[opponent]).length; if (totalFields >= 22) { const total = (id:string) => Object.values(state.sheets[id]).reduce((a:number,b:any)=>a+Number(b),0); return finish(state, total(playerId) >= total(opponent) ? playerId : opponent, 'Јамб листата е пополнета!'); } state.message = 'Запишано — ред е на противникот.'; }
+    if (action === 'roll') { if (state.rolls >= 3) throw new Error('Избери поле за запишување.'); state.dice = state.dice.map((die:number, index:number) => state.held[index] ? die : randomInt(6) + 1); state.rolls += 1; state.message = `Фрлање ${state.rolls} од 3.`; }
+    else if (action === 'hold') { if (!state.rolls) throw new Error('Прво фрли ги коцките.'); const index = Number(payload.index); if (!Number.isInteger(index) || index < 0 || index >= 5) throw new Error('Избери валидна коцка.'); state.held[index] = !state.held[index]; }
+    else if (action === 'score') { const category = String(payload.category); if (!YAMB_CATEGORIES.has(category) || !state.rolls || state.sheets[playerId][category] !== undefined) throw new Error('Тоа поле не може да се запише.'); state.sheets[playerId][category] = yambScore(category, state.dice); state.dice = [1,1,1,1,1]; state.held = [false,false,false,false,false]; state.rolls = 0; turnId = opponent; const totalFields = Object.keys(state.sheets[playerId]).length + Object.keys(state.sheets[opponent]).length; if (totalFields >= 22) { const total = (id:string) => Object.values(state.sheets[id]).reduce((a:number,b:any)=>a+Number(b),0); return finish(state, total(playerId) >= total(opponent) ? playerId : opponent, 'Јамб листата е пополнета!'); } state.message = 'Запишано — ред е на противникот.'; }
     else throw new Error('Невалиден потег.');
   }
 
@@ -212,7 +239,7 @@ export function act(game: GameSlug, room: PlayerRoom, playerId: string, action: 
     if (action !== 'defend') throw new Error('Невалиден потег.'); const cell = Number(payload.cell); if (!Number.isInteger(cell) || cell < 0 || cell >= 19) throw new Error('Избери шестоаголник.');
     if (state.threats[cell] > 0) { state.threats[cell] -= 1; state.score += 1; }
     else state.message = 'Таму беше мирно — внимавај на рабовите.';
-    for (let count = 0; count < Math.min(3, 1 + Math.floor(state.wave / 3)); count += 1) { const edge = [0,1,2,3,6,7,11,12,15,16,17,18][Math.floor(Math.random()*12)]; state.threats[edge] += 1; if (state.threats[edge] > 3) { state.threats[edge] = 2; state.health -= 1; } }
+    for (let count = 0; count < Math.min(3, 1 + Math.floor(state.wave / 3)); count += 1) { const edges = [0,1,2,3,6,7,11,12,15,16,17,18]; const edge = edges[randomInt(edges.length)]; state.threats[edge] += 1; if (state.threats[edge] > 3) { state.threats[edge] = 2; state.health -= 1; } }
     state.wave += 1; turnId = opponent; if (state.score >= 18) return finish(state, playerId, 'Одбраната успеа — градот е безбеден!'); if (state.health <= 0) return finish(state, opponent, 'Одбраната падна. Обидете се повторно!'); state.message = `Бран ${state.wave} — бранете го јадрото заедно.`;
   }
 
@@ -222,7 +249,7 @@ export function act(game: GameSlug, room: PlayerRoom, playerId: string, action: 
 export function publicState(game: GameSlug, state: any, playerId: string) {
   const view = structuredClone(state);
   if (game === 'domino' || game === 'tarok' || game === 'zandar') Object.keys(view.hands || {}).forEach((id) => { if (id !== playerId) view.hands[id] = Array(view.hands[id].length).fill(null); });
-  if (game === 'ships') Object.keys(view.fleets || {}).forEach((id) => { if (id !== playerId) view.fleets[id] = []; });
+  if (game === 'ships') { const shots = new Set(view.shots?.[playerId] || []); Object.keys(view.fleets || {}).forEach((id) => { if (id !== playerId) view.fleets[id] = view.fleets[id].filter((cell: number) => shots.has(cell)); }); }
   if (game === 'sketch' && playerId !== view.drawerId) view.word = '';
   return view;
 }
