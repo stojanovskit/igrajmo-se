@@ -23,7 +23,7 @@ type LiveStats = {
   gamesLast24Hours: number;
   playersByGame: Record<string, number>;
   roomsByGame: Record<string, number>;
-  players: { nickname: string; game: string | null }[];
+  players: { nickname: string; game: string | null; joinRoomId: string | null; isSelf: boolean }[];
 };
 
 const playerColors = ['pink', 'blue', 'yellow', 'green'];
@@ -36,6 +36,7 @@ export default function Home() {
   const [nickname, setNickname] = useState('');
   const [profileReady, setProfileReady] = useState(false);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+  const [joinRoomCode, setJoinRoomCode] = useState('');
   const [liveStats, setLiveStats] = useState<LiveStats | null>(null);
   const activeGame = selectedGame?.slug || null;
 
@@ -73,28 +74,56 @@ export default function Home() {
       }
     };
     const refreshStats = async () => {
-      try { await applyStats(await fetch('/api/presence', { cache: 'no-store' })); } catch {}
+      try { await applyStats(await fetch(`/api/presence?playerId=${encodeURIComponent(playerId)}`, { cache: 'no-store' })); } catch {}
     };
 
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') void heartbeat();
     };
+    const onPageShow = () => void heartbeat();
 
     void heartbeat();
     const heartbeatInterval = window.setInterval(() => void heartbeat(), 45_000);
     const statsInterval = window.setInterval(() => void refreshStats(), 15_000);
     document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pageshow', onPageShow);
 
     return () => {
       stopped = true;
       window.clearInterval(heartbeatInterval);
       window.clearInterval(statsInterval);
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pageshow', onPageShow);
     };
   }, [profileReady, nickname, activeGame, activeRoomId]);
 
+  useEffect(() => {
+    if (!profileReady) return;
+    const playerId = localStorage.getItem('igrajmo-player-id');
+    if (!playerId) return;
+    const leaveSite = () => {
+      const data = new Blob([JSON.stringify({ playerId, offline: true })], { type: 'application/json' });
+      navigator.sendBeacon('/api/presence', data);
+    };
+    window.addEventListener('pagehide', leaveSite);
+    return () => window.removeEventListener('pagehide', leaveSite);
+  }, [profileReady]);
+
   function chooseGame(game: (typeof games)[number]) {
+    setJoinRoomCode('');
     setSelectedGame(game);
+  }
+
+  function joinPlayer(player: LiveStats['players'][number]) {
+    const game = games.find((candidate) => candidate.slug === player.game);
+    if (!game || !player.joinRoomId) return;
+    setJoinRoomCode(player.joinRoomId);
+    setSelectedGame(game);
+  }
+
+  function closeGame() {
+    setSelectedGame(null);
+    setJoinRoomCode('');
   }
 
   return (
@@ -122,7 +151,7 @@ export default function Home() {
           <p>Омилените друштвени игри се повторно на едно место — на македонски, бесплатно и со вистински противници.</p>
           <div className="hero-buttons">
             <a className="primary-button" href="#games">Избери игра <b>→</b></a>
-            <button className="text-button button-reset" onClick={() => setSelectedGame(games[0])}><span>▶</span> Најди противник</button>
+            <button className="text-button button-reset" onClick={() => chooseGame(games[0])}><span>▶</span> Најди противник</button>
           </div>
           <div className="trust-row">
             <span><b>✓</b> Без преземање</span><span><b>✓</b> Играј како гостин</span><span><b>✓</b> 100% бесплатно</span>
@@ -143,7 +172,7 @@ export default function Home() {
             <div className="game-footer">
               <div className="turn-player"><span className="avatar avatar-red">1</span><p><b>Гостин 1</b><small>Демо потег</small></p></div>
               <div className="mini-players"><span className="avatar avatar-blue">2</span></div>
-              <button onClick={() => setSelectedGame(games[0])}>Отвори ја играта</button>
+              <button onClick={() => chooseGame(games[0])}>Отвори ја играта</button>
             </div>
           </div>
           <div className="floating-chat"><span className="avatar avatar-blue">2</span><p><b>Демо порака</b><br />Ајде, фрлај! 🎲</p></div>
@@ -165,15 +194,25 @@ export default function Home() {
       </section>
 
       <section className="community" id="players">
-        <div className="community-copy"><span className="section-kicker">НИКОГАШ НЕ СИ САМ</span><h2>Стара игра.<br />Нови пријателства.</h2><p>Влези во соба, поздрави го друштвото и почни партија. Баш како некогаш — само побрзо и поубаво.</p><div className="stat-row"><div><b>{liveStats?.onlineCount ?? '…'}</b><span>онлајн сега</span></div><div><b>{liveStats?.activeRooms ?? '…'}</b><span>соби · 30 мин.</span></div><div><b>{liveStats?.gamesLast24Hours ?? '…'}</b><span>завршени · 24 ч.</span></div></div></div>
-        <div className="player-list"><div className="player-list-head"><b>Кој е онлајн?</b><span><i /> {liveStats?.onlineCount ?? '…'} активни</span></div>{liveStats?.players.length ? liveStats.players.map((player, index) => { const gameName = games.find((game) => game.slug === player.game)?.name; return <div className="player-row" key={`${player.nickname}-${index}`}><span className={`avatar ${playerColors[index % playerColors.length]}`}>{player.nickname[0]?.toUpperCase() || '?'}</span><p><b>{player.nickname}</b><small>{gameName ? `активен во ${gameName}` : 'на почетната страница'}</small></p><span className="player-live-label">сега</span></div>; }) : <div className="player-row empty-player"><p><b>{liveStats ? 'Нема активни гости.' : 'Ги вчитуваме активните гости…'}</b><small>Листата се обновува автоматски.</small></p></div>}</div>
+        <div className="community-copy"><span className="section-kicker">НИКОГАШ НЕ СИ САМ</span><h2>Стара игра.<br />Нови пријателства.</h2><p>Влези во соба, поздрави го друштвото и почни партија. Баш како некогаш — само побрзо и поубаво.</p><div className="stat-row"><div><b>{liveStats?.onlineCount ?? '…'}</b><span>онлајн сега</span></div><div><b>{liveStats?.activeRooms ?? '…'}</b><span>активни соби сега</span></div><div><b>{liveStats?.gamesLast24Hours ?? '…'}</b><span>завршени · 24 ч.</span></div></div></div>
+        <div className="player-list">
+          <div className="player-list-head"><b>Кој е онлајн?</b><span><i /> {liveStats?.onlineCount ?? '…'} активни</span></div>
+          {liveStats?.players.length ? liveStats.players.map((player, index) => {
+            const gameName = games.find((game) => game.slug === player.game)?.name;
+            return <div className="player-row" key={`${player.nickname}-${index}`}>
+              <span className={`avatar ${playerColors[index % playerColors.length]}`}>{player.nickname[0]?.toUpperCase() || '?'}</span>
+              <p><b>{player.nickname}</b><small>{gameName ? `активен во ${gameName}` : 'на почетната страница'}</small></p>
+              {player.isSelf ? <span className="player-live-label">ти</span> : gameName ? <button className="player-join-button" disabled={!player.joinRoomId} onClick={() => joinPlayer(player)}>{player.joinRoomId ? 'Влези во игра' : 'Нема слободна соба'}</button> : <span className="player-live-label">сега</span>}
+            </div>;
+          }) : <div className="player-row empty-player"><p><b>{liveStats ? 'Нема активни гости.' : 'Ги вчитуваме активните гости…'}</b><small>Листата се обновува автоматски.</small></p></div>}
+        </div>
       </section>
 
       <footer><a className="brand" href="#top"><span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /></span><span>ИГРАЈМО<span>.СЕ</span></span></a><p>Направено со љубов за старото друштво. · Македонско издание 2026</p></footer>
 
       {notice && <div className="toast" role="status"><span>{notice}</span><button onClick={() => setNotice(null)} aria-label="Затвори">×</button></div>}
       {profileOpen && <ProfileModal nickname={nickname} onClose={() => setProfileOpen(false)} onSave={(name) => { localStorage.setItem('igrajmo-nickname', name); setNickname(name); setProfileOpen(false); }} />}
-      {selectedGame && <GameRoom game={selectedGame} savedNickname={nickname} onSaveNickname={(name) => { localStorage.setItem('igrajmo-nickname', name); setNickname(name); }} onRoomActivity={setActiveRoomId} onClose={() => setSelectedGame(null)} />}
+      {selectedGame && <GameRoom game={selectedGame} initialRoomCode={joinRoomCode} savedNickname={nickname} onSaveNickname={(name) => { localStorage.setItem('igrajmo-nickname', name); setNickname(name); }} onRoomActivity={setActiveRoomId} onClose={closeGame} />}
     </main>
   );
 }

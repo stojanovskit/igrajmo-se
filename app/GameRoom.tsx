@@ -1,10 +1,10 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/set-state-in-effect */
 
-import { FormEvent, PointerEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, PointerEvent, useCallback, useEffect, useRef, useState } from 'react';
 
 export type GameInfo = { name: string; icon: string; slug: string; description: string };
-type Room = { id: string; game: string; host_id: string; host_name: string; guest_id: string | null; guest_name: string | null; turn_id: string; status: 'waiting'|'playing'|'finished'; state: any };
+type Room = { id: string; game: string; host_id: string; host_name: string; guest_id: string | null; guest_name: string | null; turn_id: string; status: 'waiting'|'playing'|'finished'; state: any; opponentPresent: boolean | null };
 type SendAction = (action: string, payload?: Record<string, unknown>) => Promise<void>;
 
 const memorySymbols = ['♞','⚄','♦','✦','●','✎'];
@@ -12,15 +12,23 @@ const diceFaces = ['⚀','⚁','⚂','⚃','⚄','⚅'];
 const chessPieces: Record<string,string> = { wK:'♔',wQ:'♕',wR:'♖',wB:'♗',wN:'♘',wP:'♙',bK:'♚',bQ:'♛',bR:'♜',bB:'♝',bN:'♞',bP:'♟' };
 const yambCategories = [['1','Единици'],['2','Двојки'],['3','Тројки'],['4','Четворки'],['5','Петки'],['6','Шестки'],['three','Три исти'],['straight','Кента'],['full','Фул'],['poker','Покер'],['yamb','Јамб']];
 
-export default function GameRoom({ game, savedNickname, onSaveNickname, onRoomActivity, onClose }: { game: GameInfo; savedNickname: string; onSaveNickname: (name:string)=>void; onRoomActivity: (roomId: string | null) => void; onClose:()=>void }) {
+export default function GameRoom({ game, initialRoomCode, savedNickname, onSaveNickname, onRoomActivity, onClose }: { game: GameInfo; initialRoomCode?: string; savedNickname: string; onSaveNickname: (name:string)=>void; onRoomActivity: (roomId: string | null) => void; onClose:()=>void }) {
   const [nickname,setNickname] = useState(savedNickname);
-  const [roomCode,setRoomCode] = useState('');
+  const [roomCode,setRoomCode] = useState(initialRoomCode || '');
   const [playerId,setPlayerId] = useState('');
   const [room,setRoom] = useState<Room|null>(null);
   const [busy,setBusy] = useState(false);
   const [error,setError] = useState('');
+  const autoJoinAttempted = useRef(false);
   const activeRoomId = room?.id;
   const activeRoomStatus = room?.status;
+
+  const send = useCallback(async (body: Record<string,unknown>) => {
+    setBusy(true); setError('');
+    try { const response = await fetch('/api/rooms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,playerId,nickname})}); const data = await response.json() as Room & { error?: string }; if (!response.ok) throw new Error(data.error || 'Нешто не е во ред.'); setRoom(data); onSaveNickname(nickname.trim()); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : 'Обиди се повторно.'); }
+    finally { setBusy(false); }
+  }, [nickname, onSaveNickname, playerId]);
 
   useEffect(() => { let id = localStorage.getItem('igrajmo-player-id'); if (!id) { id = crypto.randomUUID().replace(/-/g,''); localStorage.setItem('igrajmo-player-id',id); } setPlayerId(id); }, []);
   useEffect(() => {
@@ -32,14 +40,14 @@ export default function GameRoom({ game, savedNickname, onSaveNickname, onRoomAc
     const timer = setInterval(async () => { try { const response = await fetch(`/api/rooms?id=${activeRoomId}&playerId=${playerId}`,{cache:'no-store'}); if (response.ok) setRoom(await response.json()); } catch {} }, 900);
     return () => clearInterval(timer);
   },[activeRoomId,activeRoomStatus,playerId]);
+  useEffect(() => {
+    if (!initialRoomCode || !savedNickname.trim() || !playerId || autoJoinAttempted.current) return;
+    autoJoinAttempted.current = true;
+    void send({type:'join',game:game.slug,roomId:initialRoomCode});
+  }, [game.slug, initialRoomCode, playerId, savedNickname, send]);
 
-  async function send(body: Record<string,unknown>) {
-    setBusy(true); setError('');
-    try { const response = await fetch('/api/rooms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,playerId,nickname})}); const data = await response.json() as Room & { error?: string }; if (!response.ok) throw new Error(data.error || 'Нешто не е во ред.'); setRoom(data); onSaveNickname(nickname.trim()); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : 'Обиди се повторно.'); }
-    finally { setBusy(false); }
-  }
   async function start(event: FormEvent) { event.preventDefault(); if (!nickname.trim()) return setError('Внеси прекар за да почнеш.'); await send({type:roomCode.trim()?'join':'matchmake',game:game.slug,roomId:roomCode.trim()}); }
+  function restartMatch() { setRoom(null); setRoomCode(''); setError(''); }
   const action: SendAction = async (name,payload={}) => send({type:'action',roomId:room?.id,action:name,payload});
   const opponent = room ? (room.host_id===playerId ? room.guest_id : room.host_id) : '';
 
@@ -47,10 +55,10 @@ export default function GameRoom({ game, savedNickname, onSaveNickname, onRoomAc
     {!room ? <div className="matchmaker"><span className="modal-icon">{game.icon}</span><span className="section-kicker">ИГРА ВО ЖИВО · БЕЗ СМЕТКА</span><h2>{game.name} за двајца</h2><p>{game.description} Ќе те споиме со слободен играч или внеси код од пријател.</p><form onSubmit={start}><label>Твој прекар<input autoFocus value={nickname} maxLength={20} onChange={(e)=>setNickname(e.target.value)} placeholder="Твој прекар" /></label><label>Код на соба <small>(по избор)</small><input value={roomCode} maxLength={6} onChange={(e)=>setRoomCode(e.target.value.toUpperCase())} placeholder="На пр. A8F2K1" /></label>{error&&<p className="form-error">{error}</p>}<button className="modal-primary" disabled={busy||!playerId}>{busy?'Бараме…':roomCode?'Влези во собата':'Најди противник'}</button></form></div>
     : <div className="room-game"><div className="memory-head"><div><span className="section-kicker">{game.name.toUpperCase()} · СОБА {room.id}</span><h2>{room.state.message}</h2></div><button className="copy-code" onClick={()=>navigator.clipboard?.writeText(room.id)}>Копирај код</button></div>
       <Players room={room} playerId={playerId} />
-      {room.status==='waiting' ? <div className="waiting-room"><span>{game.icon}</span><h3>Собата е подготвена</h3><p>Испрати го кодот <b>{room.id}</b> на пријател. Може да влезе без сметка.</p></div> : <GameBoard game={game.slug} room={room} playerId={playerId} opponent={opponent||''} busy={busy} action={action} />}
+      {room.status==='waiting' ? <div className="waiting-room"><span>{game.icon}</span><h3>Собата е подготвена</h3><p>Испрати го кодот <b>{room.id}</b> на пријател. Може да влезе без сметка.</p></div> : room.status==='playing'&&room.opponentPresent===false ? <div className="player-left-notice"><span>↪</span><h3>Противникот ја напушти играта</h3><p>Веќе не е поврзан во оваа соба. Можеш веднаш да побараш нов противник.</p><button className="modal-primary" onClick={restartMatch}>Најди нов противник</button></div> : <GameBoard game={game.slug} room={room} playerId={playerId} opponent={opponent||''} busy={busy} action={action} />}
       {error&&<p className="form-error center-error">{error}</p>}
-      <div className="game-status"><span className="pulse-dot" />{room.status==='waiting'?'Се чека втор играч…':room.status==='finished'?'Партијата заврши.':room.turn_id===playerId?'Ти си на ред.':'Противникот е на ред.'}</div>
-      {room.status==='finished'&&<button className="modal-primary play-again" onClick={()=>setRoom(null)}>Нова партија</button>}
+      <div className="game-status"><span className="pulse-dot" />{room.status==='waiting'?'Се чека втор играч…':room.status==='finished'?'Партијата заврши.':room.opponentPresent===false?'Противникот излезе од собата.':room.turn_id===playerId?'Ти си на ред.':'Противникот е на ред.'}</div>
+      {room.status==='finished'&&<button className="modal-primary play-again" onClick={restartMatch}>Нова партија</button>}
     </div>}
   </div></div>;
 }

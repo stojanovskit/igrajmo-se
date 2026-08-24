@@ -60,6 +60,13 @@ export async function ensureSchema() {
         room_id TEXT
       )`),
       db.prepare('CREATE INDEX IF NOT EXISTS idx_visitor_rooms_room_id ON visitor_rooms(room_id)'),
+      db.prepare(`CREATE TABLE IF NOT EXISTS room_players (
+        player_id TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL,
+        last_seen INTEGER NOT NULL
+      )`),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_room_players_room_seen ON room_players(room_id, last_seen)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_room_players_last_seen ON room_players(last_seen)'),
     ]).then(() => undefined).catch((error) => {
       schemaReady = null;
       throw error;

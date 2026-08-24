@@ -4,6 +4,7 @@ import { act, GAME_SLUGS, GameSlug, initialState, joinState, publicState } from 
 import { ensureSchema, getRoom, parseRoom, RoomRow, saveRoomState } from '@/db/rooms';
 
 export const runtime = 'edge';
+const ROOM_PRESENCE_WINDOW_MS = 10 * 1000;
 
 const cleanText = (value: unknown, fallback = '') => {
   const valueText = typeof value === 'string' ? value.trim().replace(/[^\p{L}\p{N}_ -]/gu, '') : '';
@@ -12,8 +13,36 @@ const cleanText = (value: unknown, fallback = '') => {
 
 function validGame(value: unknown): value is GameSlug { return typeof value === 'string' && (GAME_SLUGS as readonly string[]).includes(value); }
 
-function roomView(room: Awaited<ReturnType<typeof getRoom>>, playerId: string) {
-  return room ? { ...room, state: publicState(room.game as GameSlug, room.state, playerId) } : null;
+async function markPlayerInRoom(db: D1Database, playerId: string, nickname: string, game: GameSlug, roomId: string) {
+  const now = Date.now();
+  await db.batch([
+    db.prepare(`INSERT INTO online_players (player_id, nickname, game, last_seen) VALUES (?, ?, ?, ?)
+      ON CONFLICT(player_id) DO UPDATE SET nickname = excluded.nickname, game = excluded.game, last_seen = excluded.last_seen`)
+      .bind(playerId, nickname, game, now),
+    db.prepare(`INSERT INTO room_players (player_id, room_id, last_seen) VALUES (?, ?, ?)
+      ON CONFLICT(player_id) DO UPDATE SET room_id = excluded.room_id, last_seen = excluded.last_seen`).bind(playerId, roomId, now),
+  ]);
+}
+
+async function roomView(room: Awaited<ReturnType<typeof getRoom>>, playerId: string) {
+  if (!room) return null;
+  const db = env.DB as D1Database;
+  const now = Date.now();
+  const isParticipant = playerId === room.host_id || playerId === room.guest_id;
+  if (isParticipant && room.status !== 'finished') {
+    await db.prepare(`INSERT INTO room_players (player_id, room_id, last_seen) VALUES (?, ?, ?)
+      ON CONFLICT(player_id) DO UPDATE SET room_id = excluded.room_id, last_seen = excluded.last_seen`)
+      .bind(playerId, room.id, now).run();
+  }
+  const opponentId = playerId === room.host_id ? room.guest_id : playerId === room.guest_id ? room.host_id : null;
+  let opponentPresent: boolean | null = null;
+  if (room.status === 'playing' && opponentId) {
+    const present = await db.prepare(`SELECT player_id FROM room_players
+      WHERE player_id = ? AND room_id = ? AND last_seen >= ?`)
+      .bind(opponentId, room.id, now - ROOM_PRESENCE_WINDOW_MS).first<{ player_id: string }>();
+    opponentPresent = Boolean(present);
+  }
+  return { ...room, state: publicState(room.game as GameSlug, room.state, playerId), opponentPresent };
 }
 
 async function resolveRoom(room: Awaited<ReturnType<typeof getRoom>>) {
@@ -31,14 +60,14 @@ export async function GET(request: Request) {
   const playerId = cleanText(query.get('playerId'), 'guest');
   if (id) {
     const room = await resolveRoom(await getRoom(id));
-    return room ? Response.json(roomView(room, playerId)) : Response.json({ error: 'Собата не постои.' }, { status: 404 });
+    return room ? Response.json(await roomView(room, playerId)) : Response.json({ error: 'Собата не постои.' }, { status: 404 });
   }
   const game = query.get('game');
   const statement = validGame(game)
     ? (env.DB as D1Database).prepare("SELECT * FROM rooms WHERE updated_at > ? AND status != 'finished' AND game = ? ORDER BY updated_at DESC LIMIT 12").bind(Date.now() - 21600000, game)
     : (env.DB as D1Database).prepare("SELECT * FROM rooms WHERE updated_at > ? AND status != 'finished' ORDER BY updated_at DESC LIMIT 12").bind(Date.now() - 21600000);
   const result = await statement.all<RoomRow>();
-  return Response.json(result.results.map(parseRoom).map((room) => roomView(room, playerId)));
+  return Response.json(await Promise.all(result.results.map(parseRoom).map((room) => roomView(room, playerId))));
 }
 
 export async function POST(request: Request) {
@@ -60,25 +89,34 @@ export async function POST(request: Request) {
         const state = joinState(game, row.state, row.host_id, playerId);
         const joined = await db.prepare("UPDATE rooms SET guest_id = ?, guest_name = ?, state = ?, status = 'playing', updated_at = ? WHERE id = ? AND status = 'waiting' AND guest_id IS NULL")
           .bind(playerId, nickname, JSON.stringify(state), Date.now(), waiting.id).run();
-        if (joined.meta.changes) return Response.json(roomView(await getRoom(waiting.id), playerId));
+        if (joined.meta.changes) {
+          await markPlayerInRoom(db, playerId, nickname, game, waiting.id);
+          return Response.json(await roomView(await getRoom(waiting.id), playerId));
+        }
       }
       const id = crypto.randomUUID().replace(/-/g, '').slice(0, 6).toUpperCase();
       const state = initialState(game, playerId);
       await db.prepare('INSERT INTO rooms (id, game, name, host_id, host_name, state, turn_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .bind(id, game, `Соба ${id}`, playerId, nickname, JSON.stringify(state), playerId, 'waiting', Date.now(), Date.now()).run();
-      return Response.json(roomView(await getRoom(id), playerId), { status: 201 });
+      await markPlayerInRoom(db, playerId, nickname, game, id);
+      return Response.json(await roomView(await getRoom(id), playerId), { status: 201 });
     }
 
     if (type === 'join') {
       const id = cleanText(body.roomId, '').toUpperCase();
       const room = await getRoom(id);
       if (!room) return Response.json({ error: 'Не ја најдовме собата.' }, { status: 404 });
-      if (room.host_id === playerId || room.guest_id === playerId) return Response.json(roomView(room, playerId));
+      if (room.host_id === playerId || room.guest_id === playerId) {
+        await markPlayerInRoom(db, playerId, nickname, room.game as GameSlug, room.id);
+        return Response.json(await roomView(room, playerId));
+      }
       if (room.status !== 'waiting') return Response.json({ error: 'Собата е полна.' }, { status: 409 });
       const state = joinState(room.game as GameSlug, room.state, room.host_id, playerId);
-      await db.prepare("UPDATE rooms SET guest_id = ?, guest_name = ?, state = ?, status = 'playing', updated_at = ? WHERE id = ? AND status = 'waiting'")
+      const joined = await db.prepare("UPDATE rooms SET guest_id = ?, guest_name = ?, state = ?, status = 'playing', updated_at = ? WHERE id = ? AND status = 'waiting' AND guest_id IS NULL")
         .bind(playerId, nickname, JSON.stringify(state), Date.now(), id).run();
-      return Response.json(roomView(await getRoom(id), playerId));
+      if (!joined.meta.changes) return Response.json({ error: 'Некој веќе се приклучи во собата.' }, { status: 409 });
+      await markPlayerInRoom(db, playerId, nickname, room.game as GameSlug, room.id);
+      return Response.json(await roomView(await getRoom(id), playerId));
     }
 
     if (type === 'action') {
@@ -88,7 +126,8 @@ export async function POST(request: Request) {
       if (![room.host_id, room.guest_id].includes(playerId)) return Response.json({ error: 'Не си играч во оваа соба.' }, { status: 403 });
       const result = act(room.game as GameSlug, room, playerId, cleanText(body.action), body.payload || {});
       await saveRoomState(room.id, result.state, result.turnId, result.status);
-      return Response.json(roomView(await getRoom(room.id), playerId));
+      await markPlayerInRoom(db, playerId, nickname, room.game as GameSlug, room.id);
+      return Response.json(await roomView(await getRoom(room.id), playerId));
     }
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : 'Невалиден потег.' }, { status: 409 });
